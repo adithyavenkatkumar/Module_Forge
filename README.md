@@ -107,7 +107,7 @@ cd root-terraform-azure
 terraform init
 terraform validate
 terraform plan -out=azure-root.tfplan
-terraform apply azure-root.tfplan
+terraform apply --auto-approve
 ```
 
 ### Deploy AWS Root Configuration
@@ -116,7 +116,7 @@ cd root-terraform-aws
 terraform init
 terraform validate
 terraform plan -out=aws-root.tfplan
-terraform apply aws-root.tfplan
+terraform apply --auto-approve
 ```
 
 ### Deploy Environment-Specific Stacks (`dev`, `test`, `staging`, `prod`, `dr`)
