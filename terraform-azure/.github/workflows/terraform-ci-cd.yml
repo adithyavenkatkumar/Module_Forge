@@ -1,0 +1,130 @@
+name: "Azure Infrastructure CI/CD Pipeline"
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  fmt-and-validate:
+    name: "Terraform Format & Validation"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      - name: Validate All Child Modules
+        run: |
+          for dir in modules/*/; do
+            echo "Validating module: $dir"
+            (cd "$dir" && terraform init -backend=false && terraform validate)
+          done
+
+  security-scan:
+    name: "Security Scan (Trivy / Checkov)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner in IaC mode
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          hide-shortcut-text: 'true'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
+  plan:
+    name: "Terraform Plan"
+    needs: [fmt-and-validate, security-scan]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [dev, test, staging, prod, dr]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
+
+      - name: Terraform Init
+        run: |
+          cd environments/${{ matrix.environment }}
+          terraform init
+
+      - name: Terraform Plan
+        run: |
+          cd environments/${{ matrix.environment }}
+          terraform plan -out=${{ matrix.environment }}.tfplan
+
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.environment }}-tfplan
+          path: environments/${{ matrix.environment }}/${{ matrix.environment }}.tfplan
+
+  apply:
+    name: "Terraform Apply (Prod / Approval)"
+    needs: [plan]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: production
+    strategy:
+      matrix:
+        environment: [dev, test, staging, prod, dr]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.environment }}-tfplan
+          path: environments/${{ matrix.environment }}
+
+      - name: Terraform Init
+        run: |
+          cd environments/${{ matrix.environment }}
+          terraform init
+
+      - name: Terraform Apply
+        run: |
+          cd environments/${{ matrix.environment }}
+          terraform apply -auto-approve ${{ matrix.environment }}.tfplan
